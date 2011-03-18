@@ -1,1 +1,7 @@
 Goto wiki: https://github.com/cybergrind/django-performance/wiki for more details
+
+
+For graph support you should install:
+  * dot (graphviz package, http://www.graphviz.org/)
+  * gprof2dot (http://code.google.com/p/jrfonseca/wiki/Gprof2Dot)
+
