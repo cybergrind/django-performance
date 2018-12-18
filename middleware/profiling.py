@@ -2,17 +2,11 @@ import sys
 import tempfile
 import os
 import shutil
-import hotshot
-import hotshot.stats
 from subprocess import call
-try:
-    import cProfile
-    NO_CPROFILE = False
-except:
-    NO_CPROFILE = True
+import cProfile
 from django.conf import settings
 from django.http import HttpResponse
-from cStringIO import StringIO
+from io import StringIO
 
 class ProfileMiddleware(object):
     """
@@ -25,53 +19,62 @@ class ProfileMiddleware(object):
     but you really shouldn't add this middleware to any production configuration.
     * Only tested on Linux
     """
+    def __init__(self, get_response):
+        self.get_response = get_response
+
+    def __call__(self, request):
+        self.request = request
+
+        self.process_request(request)
+        if self.enabled:
+            resp = self.prof.runcall(self.get_response, request)
+        else:
+            resp = self.get_response(request)
+        self.process_response(request, resp)
+        return resp
+
     def process_request(self, request):
         if settings.DEBUG:
             r = request.GET
-            if r.has_key('prof'):
-                self.tmpfile = tempfile.NamedTemporaryFile()
-                self.prof = hotshot.Profile(self.tmpfile.name)
-            elif not NO_CPROFILE and r.has_key('cprof'):
+            if 'prof' in r:
                 self.tmpfile = tempfile.NamedTemporaryFile()
                 self.prof = cProfile.Profile()
 
     def process_view(self, request, callback, callback_args, callback_kwargs):
-        r = request.GET
-        if settings.DEBUG and (r.has_key('prof') or (r.has_key('cprof') and not NO_CPROFILE)):
+        if self.enabled:
             return self.prof.runcall(callback, request, *callback_args, **callback_kwargs)
+
+    @property
+    def enabled(self):
+        return settings.DEBUG and 'prof' in self.request.GET
 
     def process_response(self, request, response):
         r = request.GET
-        if settings.DEBUG and (r.has_key('prof') or (r.has_key('cprof') and not NO_CPROFILE)):
+        if self.enabled:
             out = StringIO()
             old_stdout = sys.stdout
             sys.stdout = out
-            if r.has_key('prof'):
-                self.prof.close()
-                stats = hotshot.stats.load(self.tmpfile.name)
-                stats.sort_stats('time', 'calls')
-                stats.print_stats()
-            else:
+            if 'prof' in r:
                 self.prof.create_stats()
                 self.prof.print_stats(1)
                 self.prof.dump_stats(self.tmpfile.name)
 
             sys.stdout = old_stdout
             stats_str = out.getvalue()
-            
-            if request.GET.has_key('out'):
+
+            if 'out' in request.GET:
                 shutil.copy(self.tmpfile.name, os.path.join('/tmp', request.GET['out']))
                 f = open(self.tmpfile.name)
                 response.content = f.read()
-            elif request.GET.has_key('graph'):
+            elif 'graph' in request.GET:
                 shutil.copy(self.tmpfile.name, '/tmp/graph.cprofile')
-                os.chmod('/tmp/graph.cprofile', 0666)
+                os.chmod('/tmp/graph.cprofile', 666)
                 old = os.path.abspath('.')
                 os.chdir('/tmp')
                 cmd = '/usr/bin/gprof2dot -f pstats /tmp/graph.cprofile | /usr/bin/dot -Tsvg -o /tmp/graph.svg'
                 try:
                     ex = call(cmd, shell=True)
-                except:
+                except Exception:
                     ex = 'Error during call'
                 os.chdir(old)
                 if os.path.exists('/tmp/graph.svg'):
